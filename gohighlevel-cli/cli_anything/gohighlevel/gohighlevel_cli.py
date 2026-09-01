@@ -364,8 +364,9 @@ def opportunities_create(ctx, pipeline_id, stage_id, name, contact_id, monetary_
 @click.option("--stage-id", default=None, help="Move to stage")
 @click.option("--status", default=None, type=click.Choice(["open", "won", "lost", "abandoned"]))
 @click.option("--value", "monetary_value", default=None, type=float)
+@click.option("--assigned-to", default=None, help="Assign to user ID (owner)")
 @click.pass_context
-def opportunities_update(ctx, opportunity_id, name, stage_id, status, monetary_value):
+def opportunities_update(ctx, opportunity_id, name, stage_id, status, monetary_value, assigned_to):
     """Update an opportunity."""
     try:
         body = {}
@@ -377,6 +378,8 @@ def opportunities_update(ctx, opportunity_id, name, stage_id, status, monetary_v
             body["status"] = status
         if monetary_value is not None:
             body["monetaryValue"] = monetary_value
+        if assigned_to:
+            body["assignedTo"] = assigned_to
         data = api.put(f"/opportunities/{opportunity_id}", data=body)
         _output(ctx, data, "Opportunity Updated")
     except Exception as e:
