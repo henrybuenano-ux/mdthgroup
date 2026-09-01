@@ -215,11 +215,14 @@ def contacts_create(ctx, email, phone, first_name, last_name, name, company_name
 @click.option("--last-name", default=None)
 @click.option("--company", "company_name", default=None)
 @click.option("--tag", "tags", multiple=True, help="Replace all tags")
+@click.option("--assigned-to", default=None, help="Assign contact to user ID (owner)")
 @click.pass_context
-def contacts_update(ctx, contact_id, email, phone, first_name, last_name, company_name, tags):
+def contacts_update(ctx, contact_id, email, phone, first_name, last_name, company_name, tags, assigned_to):
     """Update a contact by ID."""
     try:
         body = {}
+        if assigned_to:
+            body["assignedTo"] = assigned_to
         if email:
             body["email"] = email
         if phone:
@@ -361,8 +364,10 @@ def opportunities_get(ctx, opportunity_id):
 @click.option("--contact-id", required=True, help="Contact ID")
 @click.option("--value", "monetary_value", default=None, type=float, help="Monetary value")
 @click.option("--status", default="open", type=click.Choice(["open", "won", "lost", "abandoned"]))
+@click.option("--assigned-to", default=None, help="Assign to user ID (owner)")
+@click.option("--source", default=None, help="Opportunity source")
 @click.pass_context
-def opportunities_create(ctx, pipeline_id, stage_id, name, contact_id, monetary_value, status):
+def opportunities_create(ctx, pipeline_id, stage_id, name, contact_id, monetary_value, status, assigned_to, source):
     """Create a new opportunity."""
     try:
         body = {
@@ -373,6 +378,10 @@ def opportunities_create(ctx, pipeline_id, stage_id, name, contact_id, monetary_
             "contactId": contact_id,
             "status": status,
         }
+        if assigned_to:
+            body["assignedTo"] = assigned_to
+        if source:
+            body["source"] = source
         if monetary_value is not None:
             body["monetaryValue"] = monetary_value
         data = api.post("/opportunities/", data=body)
