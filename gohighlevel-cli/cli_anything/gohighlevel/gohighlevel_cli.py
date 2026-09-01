@@ -174,11 +174,17 @@ def contacts_get(ctx, contact_id):
 @click.option("--company", "company_name", default=None, help="Company name")
 @click.option("--tag", "tags", multiple=True, help="Tags to add (repeatable)")
 @click.option("--source", default=None, help="Contact source")
+@click.option("--city", default=None, help="City")
+@click.option("--country", default=None, help="Country code (e.g. ES, PT)")
 @click.pass_context
-def contacts_create(ctx, email, phone, first_name, last_name, name, company_name, tags, source):
+def contacts_create(ctx, email, phone, first_name, last_name, name, company_name, tags, source, city, country):
     """Create a new contact."""
     try:
         body = {"locationId": _loc(ctx)}
+        if city:
+            body["city"] = city
+        if country:
+            body["country"] = country
         if email:
             body["email"] = email
         if phone:
@@ -259,6 +265,23 @@ def contacts_search(ctx, query, limit):
         }
         data = api.post("/contacts/search", data=body)
         _output(ctx, data, f"Search: '{query}'")
+    except Exception as e:
+        _handle_error(e)
+
+
+@contacts.command("add-note")
+@click.argument("contact_id")
+@click.option("--body", "note_body", required=True, help="Note text")
+@click.option("--body-file", default=None, help="Read note text from file (overrides --body)")
+@click.pass_context
+def contacts_add_note(ctx, contact_id, note_body, body_file):
+    """Add an internal note to a contact."""
+    try:
+        if body_file:
+            with open(body_file, encoding="utf-8") as f:
+                note_body = f.read()
+        data = api.post(f"/contacts/{contact_id}/notes", data={"body": note_body})
+        _output(ctx, data, "Note Added")
     except Exception as e:
         _handle_error(e)
 
@@ -707,6 +730,74 @@ def workflows_create_step(ctx, step_type, name, out_file, subject, body, from_na
         else:
             click.echo(f"Step added: {step['name']} ({step['type']})")
             click.echo(f"Total steps in {out_file}: {len(linked)}")
+    except Exception as e:
+        _handle_error(e)
+
+
+@workflows.command("list-triggers")
+@click.argument("workflow_id")
+@click.pass_context
+def workflows_list_triggers(ctx, workflow_id):
+    """List a workflow's triggers with conditions (experimental, internal API)."""
+    _require_experimental(ctx)
+    try:
+        client = _get_internal_client(ctx)
+        loc = _loc(ctx)
+        trigs = client.request("GET", f"/workflow/{loc}/trigger?workflowId={workflow_id}") or []
+        out = []
+        for t in trigs:
+            if t.get("deleted"):
+                continue
+            out.append({
+                "id": t.get("id"), "name": t.get("name"), "type": t.get("type"),
+                "active": t.get("active"), "conditions": t.get("conditions"),
+            })
+        _output(ctx, {"triggers": out}, "Workflow Triggers")
+    except Exception as e:
+        _handle_error(e)
+
+
+@workflows.command("add-trigger-form")
+@click.argument("workflow_id")
+@click.option("--form-id", required=True, help="Facebook form ID to add to formId conditions")
+@click.option("--dry-run", is_flag=True, help="Only show what would change")
+@click.pass_context
+def workflows_add_trigger_form(ctx, workflow_id, form_id, dry_run):
+    """Add a Facebook form ID to every facebook_lead_gen trigger of a workflow.
+
+    Appends the form to each trigger's 'Form is' (facebook.formId) is-any-of
+    condition, so existing province routing keeps working when the Meta
+    campaign switches to a new lead form (experimental, internal API).
+    """
+    _require_experimental(ctx)
+    try:
+        client = _get_internal_client(ctx)
+        loc = _loc(ctx)
+        trigs = client.request("GET", f"/workflow/{loc}/trigger?workflowId={workflow_id}") or []
+        changed, skipped, failed = [], [], []
+        for t in trigs:
+            if t.get("deleted") or t.get("type") != "facebook_lead_gen":
+                continue
+            hit = False
+            for c in t.get("conditions", []):
+                if c.get("field") == "facebook.formId":
+                    vals = c["value"] if isinstance(c["value"], list) else [c["value"]]
+                    if form_id in vals:
+                        break
+                    c["value"] = vals + [form_id]
+                    hit = True
+            if not hit:
+                skipped.append(t.get("name"))
+                continue
+            if dry_run:
+                changed.append(t.get("name"))
+                continue
+            body = {k: v for k, v in t.items() if k not in ("id", "date_added", "date_updated")}
+            body["triggersChanged"] = True
+            res = client.request("PUT", f"/workflow/{loc}/trigger/{t['id']}", body)
+            (changed if res is not None else failed).append(t.get("name"))
+        _output(ctx, {"updated": changed, "already_ok_or_skipped": skipped, "failed": failed,
+                      "dry_run": dry_run}, "Trigger Form Update")
     except Exception as e:
         _handle_error(e)
 
