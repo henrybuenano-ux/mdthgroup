@@ -802,6 +802,107 @@ def workflows_add_trigger_form(ctx, workflow_id, form_id, dry_run):
         _handle_error(e)
 
 
+@workflows.command("apply-province-map")
+@click.option("--map-file", required=True, help="JSON: {page_id, form_ids, field_id, field_title, workflows: {wf_id: [provinces]}}")
+@click.option("--dry-run", is_flag=True, help="Only show what would change")
+@click.pass_context
+def workflows_apply_province_map(ctx, map_file, dry_run):
+    """Sync facebook_lead_gen province triggers to a province->workflow map.
+
+    For each workflow in the map: deactivates province triggers whose
+    province now belongs to another workflow, and creates missing triggers
+    (page + forms + province condition). Experimental, internal API.
+    """
+    _require_experimental(ctx)
+    import json as _json
+    try:
+        cfg = _json.load(open(map_file, encoding="utf-8"))
+        client = _get_internal_client(ctx)
+        loc = _loc(ctx)
+        # Desired owner workflow per province
+        owner_of = {}
+        for wid, provs in cfg["workflows"].items():
+            for p in provs:
+                owner_of[p] = wid
+        report = {"moved": [], "kept": [], "missing": [], "failed": []}
+
+        def _ok(res):
+            return res is not None and not (isinstance(res, dict) and res.get("_error"))
+
+        seen = set()
+        for wid in cfg["workflows"]:
+            trigs = client.request("GET", f"/workflow/{loc}/trigger?workflowId={wid}") or []
+            for t in trigs:
+                if t.get("deleted") or not t.get("active", True) or t.get("type") != "facebook_lead_gen":
+                    continue
+                prov = None
+                for c in t.get("conditions", []):
+                    if c.get("field") == f"contact.{cfg['field_id']}":
+                        prov = c.get("value")
+                if not prov or prov not in owner_of:
+                    continue
+                seen.add(prov)
+                target = owner_of[prov]
+                if target == wid:
+                    report["kept"].append((wid[:8], prov))
+                    continue
+                report["moved"].append((prov, wid[:8], "->", target[:8]))
+                if dry_run:
+                    continue
+                body = {k: v for k, v in t.items() if k not in ("id", "date_added", "date_updated")}
+                body["workflow_id"] = target
+                body["actions"] = [{"workflow_id": target, "type": "add_to_workflow"}]
+                body["triggersChanged"] = True
+                res = client.request("PUT", f"/workflow/{loc}/trigger/{t['id']}", body)
+                if not _ok(res):
+                    report["failed"].append((prov, str(res)[:150]))
+        report["missing"] = sorted(set(owner_of) - seen)
+        report["dry_run"] = dry_run
+        _output(ctx, report, "Province Map Sync")
+    except Exception as e:
+        _handle_error(e)
+
+
+@workflows.command("set-assign-user")
+@click.argument("workflow_id")
+@click.option("--user-id", required=True, help="GHL user ID to assign leads to")
+@click.option("--set-country", default=None, help="Also fix update_contact_field country value (e.g. PT)")
+@click.option("--dry-run", is_flag=True, help="Only show what would change")
+@click.pass_context
+def workflows_set_assign_user(ctx, workflow_id, user_id, set_country, dry_run):
+    """Point a workflow's assign_user step at a different user (experimental)."""
+    _require_experimental(ctx)
+    try:
+        from cli_anything.gohighlevel.utils.ghl_internal_client import STRIP_KEYS
+        client = _get_internal_client(ctx)
+        loc = _loc(ctx)
+        wf = client.request("GET", f"/workflow/{loc}/{workflow_id}")
+        if not wf:
+            raise RuntimeError("workflow not found")
+        changes = []
+        for s in wf.get("workflowData", {}).get("templates", []):
+            a = s.get("attributes", {})
+            if a.get("type") == "assign_user":
+                changes.append(f"assign_user: {a.get('user_list')} -> [{user_id}]")
+                a["user_list"] = [user_id]
+                a["traffic_weightage"] = {user_id: 1}
+                a["traffic_index"] = [{"id": user_id, "indexes": [1]}]
+                a["total_index"] = 1
+            if set_country and a.get("type") == "update_contact_field":
+                for f in a.get("fields", []):
+                    if f.get("field") == "country" and f.get("value") != set_country:
+                        changes.append(f"country: {f.get('value')} -> {set_country}")
+                        f["value"] = set_country
+        if dry_run:
+            _output(ctx, {"changes": changes, "dry_run": True}, "Assign User Update")
+            return
+        body = {k: v for k, v in wf.items() if k not in STRIP_KEYS}
+        res = client.request("PUT", f"/workflow/{loc}/{workflow_id}", body)
+        _output(ctx, {"changes": changes, "saved": res is not None}, "Assign User Update")
+    except Exception as e:
+        _handle_error(e)
+
+
 @workflows.command("create-n8n")
 @click.option("--name", required=True, help="Workflow name")
 @click.option("--webhook-url", required=True, help="n8n webhook URL")
